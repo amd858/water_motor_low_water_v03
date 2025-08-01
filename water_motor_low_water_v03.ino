@@ -17,7 +17,6 @@ LiquidCrystal_I2C lcd(0x27, 16, 4);  // set the LCD address to 0x27 for a 16 cha
 #define BUZZER 13
 #define BLUE_TANK_LED 10
 #define CEMENT_TANK_LED 8
-
 #define UNDERGROUND_TANK_LED 9
 #define BLUE_SSR 12
 #define CEMENT_SSR 11
@@ -37,13 +36,17 @@ enum BuzzerStates {
   STATE_2,
   STATE_3,
   STATE_4
-
 };
 enum SensorStates {
   DIPPED,
   BOUNCE_BEFORE_NOT_DIPPED,
   NOT_DIPPED,
   BOUNCE_BEFORE_DIPPED,
+};
+enum TankFaultStates {
+  TANK_NO_FAULT,
+  TANK_BOUNCE_BEFORE_FAULT,
+  TANK_FAULT
 };
 void setup() {
   pinMode(BLUE_TANK_LOW_UNDIPPED, INPUT_PULLUP);
@@ -72,8 +75,7 @@ void setup() {
     digitalWrite(UNDERGROUND_TANK_LED, LOW);
     delay(200);
   }
-
-  // check error condition for beeping. 
+  // check error condition for beeping.
   if (check_sensors_error_condition()) {
     Serial.println("CRC is valid. Data is intact.");
     if (tank_sensor_error) {
@@ -91,7 +93,6 @@ void setup() {
 
   lcd.init();
 }
-
 
 bool check_all_sensors_disconnected() {
   // Loop through all sensor pins
@@ -129,16 +130,19 @@ void print_level(unsigned char sensor_state) {
   }
 }
 
-void print_status(unsigned char *sensor_states) {
+void print_status(unsigned char *sensor_states, unsigned char *tankFaultyStates) {
 
   lcd.setCursor(0, 0);
   lcd.print("CEMENT");
+  //lcd.print("CEM!!!");
   lcd.setCursor(5, 0);
   lcd.print("|");
   lcd.print("BLUE");
+  //lcd.print("BL!!");
   lcd.setCursor(10, 0);
   lcd.print("|");
   lcd.print("UNDER");
+  //lcd.print("UND!!");
 
 
   lcd.setCursor(0, 1);  //cement tank max
@@ -192,23 +196,64 @@ void loop() {
   };
   static int sensorDebouncecounters[9] = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 
+  static int tankFaultyDebouncecounters[3] = { 0, 0, 0 };
+  static unsigned char tankFaultyStates[3] = { TANK_NO_FAULT, TANK_NO_FAULT, TANK_NO_FAULT };
+
+
+
+
+
   sensor_debounce_proccesing(sensorStates, sensorPins, sensorDebouncecounters);
-  print_status(sensorStates);
+  print_status(sensorStates, tankFaultyStates);
   bool blue_tank_filled = tankFilled(sensorStates[0], sensorStates[1], sensorStates[2], BLUE_TANK_LED);
   bool cement_tank_filled = tankFilled(sensorStates[3], sensorStates[4], sensorStates[5], CEMENT_TANK_LED);
   bool underground_tank_filled = tankFilled(sensorStates[6], sensorStates[7], sensorStates[8], UNDERGROUND_TANK_LED);
+
+  bool blue_tank_empty = tankEmpty(sensorStates[0], sensorStates[1], sensorStates[2], BLUE_TANK_LED);
+  bool cement_tank_empty = tankEmpty(sensorStates[3], sensorStates[4], sensorStates[5], CEMENT_TANK_LED);
+  bool underground_tank_empty = tankEmpty(sensorStates[6], sensorStates[7], sensorStates[8], UNDERGROUND_TANK_LED);
+
+  bool blue_tank_faulty = tankFaulty(sensorStates[0], sensorStates[1], sensorStates[2], BLUE_TANK_LED);
+  bool cement_tank_faulty = tankFaulty(sensorStates[3], sensorStates[4], sensorStates[5], CEMENT_TANK_LED);
+  bool underground_tank_faulty = tankFaulty(sensorStates[6], sensorStates[7], sensorStates[8], UNDERGROUND_TANK_LED);
+
+  tankFaultyStates[0] = faulty_tank_processing(blue_tank_faulty, tankFaultyStates[0], tankFaultyDebouncecounters[0]);
+  tankFaultyStates[1] = faulty_tank_processing(cement_tank_faulty, tankFaultyStates[1], tankFaultyDebouncecounters[1]);
+  tankFaultyStates[2] = faulty_tank_processing(underground_tank_faulty, tankFaultyStates[2], tankFaultyDebouncecounters[2]);
+
+
   blue_tank_current_state = upper_tank_processing(blue_tank_current_state, blue_tank_filled, underground_tank_filled, BLUE_SSR, blue_tank_debounce_counter);
   cement_tank_current_state = upper_tank_processing(cement_tank_current_state, cement_tank_filled, underground_tank_filled, CEMENT_SSR, cement_tank_debouncec_counter);
   buzzer_current_state = buzzer_processing(buzzer_current_state);
 
-
   delay(50);
-  // Serial.print("blue_tank_filled =");
-  // Serial.println(blue_tank_filled);
-  // Serial.print("cement_tank_filled =");
-  // Serial.println(cement_tank_filled);
-  // Serial.print("underground_tank_filled = ");
-  // Serial.println(underground_tank_filled);
+}
+unsigned char faulty_tank_processing(bool tank_faulty, unsigned char faulty_tank_state, int &faulty_tank_debounce_counter) {
+  static const int MAX_BOUNCE = 200;
+  switch (faulty_tank_state) {
+    case TANK_NO_FAULT:
+      if (tank_faulty) {
+        faulty_tank_state = TANK_BOUNCE_BEFORE_FAULT;
+        faulty_tank_debounce_counter = 0;
+      }
+      break;
+    case TANK_BOUNCE_BEFORE_FAULT:
+      if (tank_faulty) {
+        if (faulty_tank_debounce_counter >= MAX_BOUNCE) {
+          setSensorError();
+          faulty_tank_state = TANK_FAULT;
+          faulty_tank_debounce_counter = 0;
+        } else {
+          faulty_tank_debounce_counter++;
+        }
+      } else {
+        faulty_tank_state = TANK_NO_FAULT;
+      }
+      break;
+    case TANK_FAULT:
+      break;
+  }
+  return faulty_tank_state;
 }
 
 void sensor_debounce_proccesing(unsigned char *sensor_states, int *sensor_pins, int *sensor_debounce_counters) {
@@ -288,27 +333,51 @@ void setSensorError() {
   EEPROM.put(1, calculateCRC(sensor_error));
 }
 
+bool isDippedFromState(unsigned char sensor_state) {
+  if (sensor_state == DIPPED || sensor_state == BOUNCE_BEFORE_NOT_DIPPED) {
+    return true;
+  }
+  return false;
+}
+
+bool tankFaulty(unsigned char sensor_state_low, unsigned char sensor_state_full, unsigned char sensor_state_max, int led_pin) {
+  bool low_dipped = false, full_dipped = false, max_dipped = false;
+  low_dipped = isDippedFromState(sensor_state_low);
+  full_dipped = isDippedFromState(sensor_state_full);
+  max_dipped = isDippedFromState(sensor_state_max);
+
+  if (max_dipped && (!full_dipped || !low_dipped)) {
+    return true;
+  }
+
+  if (!max_dipped && full_dipped && !low_dipped) {
+    return true;
+  }
+  return false;
+}
+bool tankEmpty(unsigned char sensor_state_low, unsigned char sensor_state_full, unsigned char sensor_state_max, int led_pin) {
+
+  bool low_dipped = false, full_dipped = false, max_dipped = false;
+  low_dipped = isDippedFromState(sensor_state_low);
+  full_dipped = isDippedFromState(sensor_state_full);
+  max_dipped = isDippedFromState(sensor_state_max);
+
+  if ((low_dipped && full_dipped) || (full_dipped && max_dipped) || (low_dipped && max_dipped)) {
+    digitalWrite(led_pin, HIGH);
+    return true;
+  } else {
+    digitalWrite(led_pin, LOW);
+    return false;
+  }
+}
+
 bool tankFilled(unsigned char sensor_state_low, unsigned char sensor_state_full, unsigned char sensor_state_max, int led_pin) {
 
   bool low_dipped = false, full_dipped = false, max_dipped = false;
-  if (sensor_state_low == DIPPED || sensor_state_low == BOUNCE_BEFORE_NOT_DIPPED) {
-    low_dipped = true;
-  }
-  if (sensor_state_full == DIPPED || sensor_state_full == BOUNCE_BEFORE_NOT_DIPPED) {
-    full_dipped = true;
-  }
-  if (sensor_state_max == DIPPED || sensor_state_max == BOUNCE_BEFORE_NOT_DIPPED) {
-    max_dipped = true;
-  }
+  low_dipped = isDippedFromState(sensor_state_low);
+  full_dipped = isDippedFromState(sensor_state_full);
+  max_dipped = isDippedFromState(sensor_state_max);
 
-  if (!tank_sensor_error) {
-    if (max_dipped && (!full_dipped || !low_dipped)) {
-      setSensorError();
-    }
-    if (!max_dipped && full_dipped && !low_dipped) {
-      setSensorError();
-    }
-  }
   if ((low_dipped && full_dipped) || (full_dipped && max_dipped) || (low_dipped && max_dipped)) {
     digitalWrite(led_pin, HIGH);
     return true;

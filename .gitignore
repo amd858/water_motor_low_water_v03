@@ -1,0 +1,23 @@
+# --- Secrets: never commit real credentials ---
+secrets.h
+credentials.h
+
+# --- Arduino build output ---
+build/
+output/
+*.elf
+*.hex
+*.bin
+*.map
+*.d
+*.o
+
+# --- Vendored archives ---
+*.zip
+*.rar
+*.7z
+
+# --- OS cruft ---
+.DS_Store
+Thumbs.db
+desktop.ini
