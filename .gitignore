@@ -12,10 +12,6 @@ output/
 *.d
 *.o
 
-# --- Vendored archives ---
-*.zip
-*.rar
-*.7z
 
 # --- OS cruft ---
 .DS_Store
